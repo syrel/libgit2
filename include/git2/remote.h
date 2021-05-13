@@ -498,6 +498,7 @@ typedef int GIT_CALLBACK(git_push_negotiation)(const git_push_update **updates, 
  */
 typedef int GIT_CALLBACK(git_push_update_reference_cb)(const char *refname, const char *status, void *data);
 
+#ifndef GIT_DEPRECATE_HARD
 /**
  * Callback to resolve URLs before connecting to remote
  *
@@ -509,8 +510,10 @@ typedef int GIT_CALLBACK(git_push_update_reference_cb)(const char *refname, cons
  * @param direction GIT_DIRECTION_FETCH or GIT_DIRECTION_PUSH
  * @param payload Payload provided by the caller
  * @return 0 on success, GIT_PASSTHROUGH or an error
+ * @deprecated Use `git_remote_set_instance_url`
  */
 typedef int GIT_CALLBACK(git_url_resolve_cb)(git_buf *url_resolved, const char *url, int direction, void *payload);
+#endif
 
 /**
  * The callback settings structure
@@ -602,11 +605,13 @@ struct git_remote_callbacks {
 	 */
 	void *payload;
 
+#ifndef GIT_DEPRECATE_HARD
 	/**
 	 * Resolve URL before connecting to remote.
 	 * The returned URL will be used to connect to the remote instead.
 	 */
 	git_url_resolve_cb resolve_url;
+#endif
 };
 
 #define GIT_REMOTE_CALLBACKS_VERSION 1
