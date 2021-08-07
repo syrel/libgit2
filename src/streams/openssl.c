@@ -40,6 +40,191 @@ SSL_CTX *git__ssl_ctx;
 # define OPENSSL_LEGACY_API
 #endif
 
+
+/*
+ * We can dlopen openssl when requested, however we do not support the
+ * "legacy api" so the current build platform must be reasonably new.
+ */
+#ifdef GIT_OPENSSL_DYNAMIC
+
+# ifdef OPENSSL_LEGACY_API
+#  error dynamically loaded openssl requires a modern openssl API
+# endif
+
+# include <dlfcn.h>
+
+void *openssl_handle;
+
+const unsigned char *(*_ASN1_STRING_get0_data)(const ASN1_STRING *x);
+int (*_ASN1_STRING_length)(const ASN1_STRING *x);
+int (*_ASN1_STRING_to_UTF8)(unsigned char **out, const ASN1_STRING *in);
+int (*_ASN1_STRING_type)(const ASN1_STRING *x);
+
+void *(*_BIO_get_data)(BIO *a);
+int (*_BIO_get_new_index)(void);
+void (*_BIO_meth_free)(BIO_METHOD *biom);
+BIO_METHOD *(*_BIO_meth_new)(int type, const char *name);
+int (*_BIO_meth_set_create)(BIO_METHOD *biom, int (*create) (BIO *));
+int (*_BIO_meth_set_ctrl)(BIO_METHOD *biom, long (*ctrl) (BIO *, int, long, void *));
+int (*_BIO_meth_set_destroy)(BIO_METHOD *biom, int (*destroy) (BIO *));
+int (*_BIO_meth_set_gets)(BIO_METHOD *biom, int (*gets) (BIO *, char *, int));
+int (*_BIO_meth_set_puts)(BIO_METHOD *biom, int (*puts) (BIO *, const char *));
+int (*_BIO_meth_set_read)(BIO_METHOD *biom, int (*read) (BIO *, char *, int));
+int (*_BIO_meth_set_write)(BIO_METHOD *biom, int (*write) (BIO *, const char *, int));
+BIO *(*_BIO_new)(const BIO_METHOD *type);
+void (*_BIO_set_data)(BIO *a, void *ptr);
+void (*_BIO_set_init)(BIO *a, int init);
+
+void (*_CRYPTO_free)(void *ptr, const char *file, int line);
+void *(*_CRYPTO_malloc)(size_t num, const char *file, int line);
+
+char *(*_ERR_error_string)(unsigned long e, char *buf);
+void (*_ERR_error_string_n)(unsigned long e, char *buf, size_t len);
+unsigned long (*_ERR_get_error)(void);
+
+# define _sk_GENERAL_NAME_num(sk) _OPENSSL_sk_num((const OPENSSL_STACK *)sk)
+# define _sk_GENERAL_NAME_value(sk, idx) _OPENSSL_sk_value((const OPENSSL_STACK *)sk, idx)
+# define _GENERAL_NAMES_free(sk) _OPENSSL_sk_free((OPENSSL_STACK *)sk);
+
+int (*_OPENSSL_init_ssl)(uint64_t opts, const OPENSSL_INIT_SETTINGS *settings);
+int (*_OPENSSL_sk_num)(const OPENSSL_STACK *sk);
+void *(*_OPENSSL_sk_value)(const OPENSSL_STACK *sk, int i);
+void (*_OPENSSL_sk_free)(OPENSSL_STACK *sk);
+
+# define _OPENSSL_malloc(num) _CRYPTO_malloc(num, OPENSSL_FILE, OPENSSL_LINE)
+# define _OPENSSL_free(addr) _CRYPTO_free(addr, OPENSSL_FILE, OPENSSL_LINE)
+
+int (*_SSL_connect)(SSL *ssl);
+long (*_SSL_ctrl)(SSL *ssl, int cmd, long arg, void *parg);
+void (*_SSL_free)(SSL *ssl);
+int (*_SSL_get_error)(SSL *ssl, int ret);
+X509 *(*_SSL_get_peer_certificate)(const SSL *ssl);
+long (*_SSL_get_verify_result)(const SSL *ssl);
+SSL *(*_SSL_new)(SSL_CTX *ctx);
+int (*_SSL_read)(SSL *ssl, const void *buf, int num);
+void (*_SSL_set_bio)(SSL *ssl, BIO *rbio, BIO *wbio);
+int (*_SSL_shutdown)(SSL *ssl);
+int (*_SSL_write)(SSL *ssl, const void *buf, int num);
+
+long (*_SSL_CTX_ctrl)(SSL_CTX *ctx, int cmd, long larg, void *parg);
+void (*_SSL_CTX_free)(SSL_CTX *ctx);
+SSL_CTX *(*_SSL_CTX_new)(const SSL_METHOD *method);
+int (*_SSL_CTX_set_cipher_list)(SSL_CTX *ctx, const char *str);
+int (*_SSL_CTX_set_default_verify_paths)(SSL_CTX *ctx);
+long (*_SSL_CTX_set_options)(SSL_CTX *ctx, long options);
+void (*_SSL_CTX_set_verify)(SSL_CTX *ctx, int mode, int (*verify_callback)(int, X509_STORE_CTX *));
+int (*_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
+
+# define _SSL_CTX_set_mode(ctx, mode) _SSL_CTX_ctrl(ctx, SSL_CTRL_MODE, mode, NULL)
+
+# define _SSLv23_method _TLS_method
+
+const SSL_METHOD *(*_TLS_method)(void);
+
+ASN1_STRING *(*_X509_NAME_ENTRY_get_data)(const X509_NAME_ENTRY *ne);
+X509_NAME_ENTRY *(*_X509_NAME_get_entry)(X509_NAME *name, int loc);
+int (*_X509_NAME_get_index_by_NID)(X509_NAME *name, int nid, int lastpos);
+void (*_X509_free)(X509 *a);
+void *(*_X509_get_ext_d2i)(const X509 *x, int nid, int *crit, int *idx);
+X509_NAME *(*_X509_get_subject_name)(const X509 *x);
+
+int (*_i2d_X509)(X509 *a, unsigned char **ppout);
+
+GIT_INLINE(void *) openssl_sym(int *err, const char *name)
+{
+	void *symbol;
+
+	/* if we've seen an err, noop to retain it */
+	if (*err)
+		return NULL;
+
+	if ((symbol = dlsym(openssl_handle, name)) == NULL) {
+		const char *msg = dlerror();
+		git_error_set(GIT_ERROR_SSL, "could not load ssl function '%s': %s", name, msg ? msg : "unknown error");
+		*err = -1;
+	}
+
+	return symbol;
+}
+
+static int openssl_dynamic_init(void)
+{
+	int err = 0;
+
+	if ((openssl_handle = dlopen("libssl.so.1.1", RTLD_NOW)) == NULL) {
+		git_error_set(GIT_ERROR_SSL, "could not load ssl libraries");
+		return -1;
+	}
+
+	_ASN1_STRING_get0_data = (const unsigned char *(*)(const ASN1_STRING *x))openssl_sym(&err, "ASN1_STRING_get0_data");
+	_ASN1_STRING_length = (int (*)(const ASN1_STRING *))openssl_sym(&err, "ASN1_STRING_length");
+	_ASN1_STRING_to_UTF8 = (int (*)(unsigned char **, const ASN1_STRING *))openssl_sym(&err, "ASN1_STRING_to_UTF8");
+	_ASN1_STRING_type = (int (*)(const ASN1_STRING *))openssl_sym(&err, "ASN1_STRING_type");
+
+	_BIO_get_data = (void *(*)(BIO *))openssl_sym(&err, "BIO_get_data");
+	_BIO_get_new_index = (int (*)(void))openssl_sym(&err, "BIO_get_new_index");
+	_BIO_meth_free = (void (*)(BIO_METHOD *))openssl_sym(&err, "BIO_meth_free");
+	_BIO_meth_new = (BIO_METHOD *(*)(int, const char *))openssl_sym(&err, "BIO_meth_new");
+	_BIO_meth_set_create = (int (*)(BIO_METHOD *, int (*)(BIO *)))openssl_sym(&err, "BIO_meth_set_create");
+	_BIO_meth_set_ctrl = (int (*)(BIO_METHOD *, long (*)(BIO *, int, long, void *)))openssl_sym(&err, "BIO_meth_set_ctrl");
+	_BIO_meth_set_destroy = (int (*)(BIO_METHOD *, int (*)(BIO *)))openssl_sym(&err, "BIO_meth_set_destroy");
+	_BIO_meth_set_gets = (int (*)(BIO_METHOD *, int (*)(BIO *, char *, int)))openssl_sym(&err, "BIO_meth_set_gets");
+	_BIO_meth_set_puts = (int (*)(BIO_METHOD *, int (*)(BIO *, const char *)))openssl_sym(&err, "BIO_meth_set_puts");
+	_BIO_meth_set_read = (int (*)(BIO_METHOD *, int (*)(BIO *, char *, int)))openssl_sym(&err, "BIO_meth_set_read");
+	_BIO_meth_set_write = (int (*)(BIO_METHOD *, int (*)(BIO *, const char *, int)))openssl_sym(&err, "BIO_meth_set_write");
+	_BIO_new = (BIO *(*)(const BIO_METHOD *))openssl_sym(&err, "BIO_new");
+	_BIO_set_data = (void (*)(BIO *a, void *))openssl_sym(&err, "BIO_set_data");
+	_BIO_set_init = (void (*)(BIO *a, int))openssl_sym(&err, "BIO_set_init");
+
+	_CRYPTO_free = (void (*)(void *, const char *, int))openssl_sym(&err, "CRYPTO_free");
+	_CRYPTO_malloc = (void *(*)(size_t, const char *, int))openssl_sym(&err, "CRYPTO_malloc");
+
+	_ERR_error_string = (char *(*)(unsigned long, char *))openssl_sym(&err, "ERR_error_string");
+	_ERR_error_string_n = (void (*)(unsigned long, char *, size_t))openssl_sym(&err, "ERR_error_string_n");
+	_ERR_get_error = (unsigned long (*)(void))openssl_sym(&err, "ERR_get_error");
+
+	_OPENSSL_init_ssl = (int (*)(uint64_t opts, const OPENSSL_INIT_SETTINGS *settings))openssl_sym(&err, "OPENSSL_init_ssl");
+	_OPENSSL_sk_num = (int (*)(const OPENSSL_STACK *))openssl_sym(&err, "OPENSSL_sk_num");
+	_OPENSSL_sk_value = (void *(*)(const OPENSSL_STACK *sk, int i))openssl_sym(&err, "OPENSSL_sk_value");
+	_OPENSSL_sk_free = (void (*)(OPENSSL_STACK *))openssl_sym(&err, "OPENSSL_sk_free");
+
+	_SSL_connect = (int (*)(SSL *))openssl_sym(&err, "SSL_connect");
+	_SSL_ctrl = (long (*)(SSL *, int, long, void *))openssl_sym(&err, "SSL_ctrl");
+	_SSL_get_peer_certificate = (X509 *(*)(const SSL *))openssl_sym(&err, "SSL_get_peer_certificate");
+	_SSL_free = (void (*)(SSL *))openssl_sym(&err, "SSL_free");
+	_SSL_get_error = (int (*)(SSL *, int))openssl_sym(&err, "SSL_get_error");
+	_SSL_get_verify_result = (long (*)(const SSL *ssl))openssl_sym(&err, "SSL_get_verify_result");
+	_SSL_new = (SSL *(*)(SSL_CTX *))openssl_sym(&err, "SSL_new");
+	_SSL_read = (int (*)(SSL *, const void *, int))openssl_sym(&err, "SSL_read");
+	_SSL_set_bio = (void (*)(SSL *, BIO *, BIO *))openssl_sym(&err, "SSL_set_bio");
+	_SSL_shutdown = (int (*)(SSL *ssl))openssl_sym(&err, "SSL_shutdown");
+	_SSL_write = (int (*)(SSL *, const void *, int))openssl_sym(&err, "SSL_write");
+
+	_SSL_CTX_ctrl = (long (*)(SSL_CTX *, int, long, void *))openssl_sym(&err, "SSL_CTX_ctrl");
+	_SSL_CTX_free = (void (*)(SSL_CTX *))openssl_sym(&err, "SSL_CTX_free");
+	_SSL_CTX_new = (SSL_CTX *(*)(const SSL_METHOD *))openssl_sym(&err, "SSL_CTX_new");
+	_SSL_CTX_set_cipher_list = (int (*)(SSL_CTX *, const char *))openssl_sym(&err, "SSL_CTX_set_cipher_list");
+	_SSL_CTX_set_default_verify_paths = (int (*)(SSL_CTX *ctx))openssl_sym(&err, "SSL_CTX_set_default_verify_paths");
+	_SSL_CTX_set_options = (long (*)(SSL_CTX *, long))openssl_sym(&err, "SSL_CTX_set_options");
+	_SSL_CTX_set_verify = (void (*)(SSL_CTX *, int, int (*)(int, X509_STORE_CTX *)))openssl_sym(&err, "SSL_CTX_set_verify");
+	_SSL_CTX_load_verify_locations = (int (*)(SSL_CTX *, const char *, const char *))openssl_sym(&err, "SSL_CTX_load_verify_locations");
+
+	_TLS_method = (const SSL_METHOD *(*)(void))openssl_sym(&err, "TLS_method");
+
+	_X509_NAME_ENTRY_get_data = (ASN1_STRING *(*)(const X509_NAME_ENTRY *))openssl_sym(&err, "X509_NAME_ENTRY_get_data");
+	_X509_NAME_get_entry = (X509_NAME_ENTRY *(*)(X509_NAME *, int))openssl_sym(&err, "X509_NAME_get_entry");
+	_X509_NAME_get_index_by_NID = (int (*)(X509_NAME *, int, int))openssl_sym(&err, "X509_NAME_get_index_by_NID");
+	_X509_free = (void (*)(X509 *))openssl_sym(&err, "X509_free");
+	_X509_get_ext_d2i = (void *(*)(const X509 *x, int nid, int *crit, int *idx))openssl_sym(&err, "X509_get_ext_d2i");
+	_X509_get_subject_name = (X509_NAME *(*)(const X509 *))openssl_sym(&err, "X509_get_subject_name");
+
+	_i2d_X509 = (int (*)(X509 *a, unsigned char **ppout))openssl_sym(&err, "i2d_X509");
+
+	return err;
+}
+
+#else /* GIT_OPENSSL_DYNAMIC */
+
 # define _ASN1_STRING_get0_data ASN1_STRING_get0_data
 # define _ASN1_STRING_length ASN1_STRING_length
 # define _ASN1_STRING_to_UTF8 ASN1_STRING_to_UTF8
@@ -94,6 +279,8 @@ SSL_CTX *git__ssl_ctx;
 # define _X509_NAME_ENTRY_get_data X509_NAME_ENTRY_get_data
 # define _X509_NAME_get_entry X509_NAME_get_entry
 # define _X509_NAME_get_index_by_NID X509_NAME_get_index_by_NID
+
+#endif /* GIT_OPENSSL_DYNAMIC */
 
 
 /*
