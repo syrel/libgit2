@@ -219,13 +219,11 @@ IF (LIBSSH2_FOUND)
 	LIST(APPEND LIBGIT2_PC_LIBS ${LIBSSH2_LDFLAGS})
 
 	# Try to find openssl if ssh2 was found
-	IF(MSVC)
-	    find_package(OpenSSL)
-	    if(OPENSSL_FOUND)
+	find_package(OpenSSL)
+	if(OPENSSL_FOUND)
 		MESSAGE(STATUS "OpenSSL Found.")
 		list(APPEND LIBGIT2_SYSTEM_INCLUDES ${OPENSSL_INCLUDE_DIR})
 		list(APPEND LIBGIT2_LIBS ${OPENSSL_LIBRARIES})
-	    endif()
 	endif()
 
 	CHECK_LIBRARY_EXISTS("${LIBSSH2_LIBRARIES}" libssh2_userauth_publickey_frommemory "${LIBSSH2_LIBRARY_DIRS}" HAVE_LIBSSH2_MEMORY_CREDENTIALS)
